@@ -5,9 +5,19 @@ on:
     branches: ['main']
   workflow_dispatch:
 
+# One deploy at a time: each imports and applies the same resources.
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
 jobs:
   build-and-deploy:
+    # Off until the Cloudflare account is set (README.md, "Setting it up"),
+    # so a push before then doesn't fail.
+    if: ${{ vars.CLOUDFLARE_ACCOUNT_ID != '' }}
     runs-on: ubuntu-latest
+    env:
+      WRANGLER_SEND_METRICS: 'false'
     steps:
       - uses: actions/checkout@v3
 
@@ -27,8 +37,8 @@ jobs:
       - name: Fetch Account ID
         id: fetch_account_id
         run: |
-          if [[ -n "${{ secrets.CLOUDFLARE_ACCOUNT_ID }}" ]]; then
-            ACCOUNT_ID="${{ secrets.CLOUDFLARE_ACCOUNT_ID }}"
+          if [[ -n "${{ vars.CLOUDFLARE_ACCOUNT_ID }}" ]]; then
+            ACCOUNT_ID="${{ vars.CLOUDFLARE_ACCOUNT_ID }}"
             echo "Using provided CLOUDFLARE_ACCOUNT_ID from secrets."
           else
             ACCOUNT_ID=$(curl -X GET "https://api.cloudflare.com/client/v4/accounts" -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" -H "Content-Type:application/json" | jq ".result[0].id" -r)
@@ -65,14 +75,6 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ steps.fetch_account_id.outputs.account_id }}
 
-      - name: Migrate state from KV (if needed)
-        run: |
-          python3 deploy/migrate_kv.py
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ steps.fetch_account_id.outputs.account_id }}
-          D1_ID: ${{ env.D1_ID }}
-
       - name: Deploy using Terraform
         # As we don't save terraform state somewhere, we need to import the existing resources
         run: |
@@ -107,3 +109,35 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ steps.fetch_account_id.outputs.account_id }}
+
+      # status.arugula.io (vars.STATUS_DOMAIN): the Pages project's custom
+      # domain and its proxied CNAME, made once and left alone after. Needs the
+      # token's Zone DNS Edit on the domain's zone.
+      - name: Custom domain
+        if: ${{ vars.STATUS_DOMAIN != '' }}
+        run: |
+          set -euo pipefail
+          api=https://api.cloudflare.com/client/v4
+          acct=$api/accounts/$CLOUDFLARE_ACCOUNT_ID/pages/projects/uptimeflare
+          cf() { curl -sS -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" -H 'Content-Type: application/json' "$@"; }
+          sub=$(cf "$acct" | jq -er '.result.subdomain')
+          if cf "$acct/domains" | jq -e --arg d "$STATUS_DOMAIN" '.result[] | select(.name == $d)' >/dev/null; then
+            echo "Pages already has $STATUS_DOMAIN"
+          else
+            cf -X POST "$acct/domains" -d "$(jq -nc --arg d "$STATUS_DOMAIN" '{name: $d}')" | jq -e '.success' >/dev/null
+            echo "Added $STATUS_DOMAIN to the Pages project"
+          fi
+          zone_name=${STATUS_DOMAIN#*.}
+          zone=$(cf "$api/zones?name=$zone_name" | jq -er '.result[0].id')
+          record=$(cf "$api/zones/$zone/dns_records?type=CNAME&name=$STATUS_DOMAIN" | jq -r '.result[0].id // empty')
+          body=$(jq -nc --arg n "$STATUS_DOMAIN" --arg c "$sub" '{type: "CNAME", name: $n, content: $c, proxied: true, ttl: 1, comment: "status page, arugula-salad/status"}')
+          if [ -n "$record" ]; then
+            cf -X PUT "$api/zones/$zone/dns_records/$record" -d "$body" | jq -e '.success' >/dev/null
+          else
+            cf -X POST "$api/zones/$zone/dns_records" -d "$body" | jq -e '.success' >/dev/null
+          fi
+          echo "$STATUS_DOMAIN -> $sub"
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ steps.fetch_account_id.outputs.account_id }}
+          STATUS_DOMAIN: ${{ vars.STATUS_DOMAIN }}

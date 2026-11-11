@@ -1,90 +1,78 @@
-<div align="right">
-  <a title="English" href="README.md"><img src="https://img.shields.io/badge/-English-A31F34?style=for-the-badge" alt="English" /></a>
-  <a title="简体中文" href="README_zh-CN.md"><img src="https://img.shields.io/badge/-%E7%AE%80%E4%BD%93%E4%B8%AD%E6%96%87-545759?style=for-the-badge" alt="简体中文"></a>
-</div>
+# Arugula status
 
-# ✔[UptimeFlare](https://github.com/lyc8503/UptimeFlare)
+The public status page for [Arugula](https://arugula.io)'s hosted services, at
+**https://status.arugula.io**. It's [UptimeFlare](https://github.com/lyc8503/UptimeFlare)
+(Apache-2.0, upstream's README is [UPTIMEFLARE.md](UPTIMEFLARE.md)) on Cloudflare
+Workers and Pages: it checks each service every minute from Cloudflare's network, so it
+stays up and says "down" when Arugula's Fly.io apps don't answer.
 
-A more advanced, serverless, and free uptime monitoring & status page solution, powered by Cloudflare Workers, complete with a user-friendly interface.
+## What it watches
 
-📢 **[[SECURITY ADVISORY](https://github.com/lyc8503/UptimeFlare/security/advisories/GHSA-36q9-v7p3-vj6v) 2026/03/04]** A vulnerability (CVE-2026-29779) that could expose monitor configuration and credentials in `uptime.config.ts` to clients was fixed. Versions between 2025-09-21 (from commit `41257c6`) and 2026-03-04 are affected. **Affected users are strongly advised to upgrade to the latest version.**
+[`uptime.config.ts`](uptime.config.ts) has the monitors:
 
-🎉 **[UPDATE 2026/01/03]** I have just migrated UptimeFlare from KV to D1 Database. I also updated the Terraform Cloudflare provider to v5 and improved the deployment process. The data structure has been optimized to resolve long-standing performance issues.
+| Monitor | Checks | Means |
+|---|---|---|
+| Control: sign-in and relay | `https://control.arugula.io/control.json` answers 200 with `"control"` | the hub is up: sign-in, joining machines, terminals through the relay |
+| Platform: chat, Cloud and projects | `https://app.arugula.io/` answers 200 | the platform is up: the hub forwards this page to it, so it answers only while both are |
+| Install script | `https://arugula.io/install.sh` answers 200 and names the repo | `curl … \| sh` works |
+| Release downloads | the newest GitHub release's `SHA256SUMS` downloads | installs and updates can fetch a release |
+| Website | `https://arugula.io/` answers 200 | |
+| Docs | `https://docs.arugula.io/` answers 200 | |
 
-New users can deploy directly, while existing users can have a simple auto migration process (upgrade docs below)! Feel free to open an issue if you run into any trouble deploying.
+The platform has no public address of its own (it's on Fly's private network), so the
+page it serves through the hub stands in for it.
 
-## ⭐Features
+## Posting an incident
 
-- Open-source, easy to deploy (in under 10 minutes, no local tools required), and free
-- Monitoring capabilities
-  - Up to 50 checks at 1-minute intervals
-  - Geo-specific checks from over [310 cities](https://www.cloudflare.com/network/) worldwide
-  - Support for HTTP/HTTPS/TCP port monitoring
-  - Up to 90-day uptime history and uptime percentage tracking
-  - Customizable request methods, headers, and body for HTTP(s)
-  - Custom status code & keyword checks for HTTP(s)
-  - Downtime notification supporting [100+ notification channels](https://github.com/caronc/apprise/wiki)
-  - Customizable Webhook
-  - Multi-language support (English/Chinese)
-- Status page
-  - Interactive ping (response time) chart for all types of monitors
-  - Scheduled maintenances alerts & Incident history page
-  - Responsive UI that adapts to your system theme
-  - Customizable status page
-  - Use your own domain with CNAME
-  - Optional password authentication (private status page)
-  - JSON API for fetching realtime status data
+Add an entry to `maintenances` in `uptime.config.ts` and push to `main`; the deploy takes
+about three minutes. Newest first:
 
-## 👀Demo
+```ts
+const maintenances: MaintenanceConfig[] = [
+  {
+    monitors: ['control'],             // the monitors it's about; leave out for all
+    title: 'Investigating slow sign-ins',
+    body: "Some people can't sign in. We're looking into it.",
+    start: '2026-12-01T14:05:00Z',
+    // end: '2026-12-01T14:40:00Z',     // add when it's over; without it, it stays up
+    color: 'red',                       // red: incident; yellow (default): maintenance; blue: info
+  },
+]
+```
 
-My status page (Online demo): https://uptimeflare.pages.dev/
+Update the `body` as it goes, and add `end` when it's resolved: the entry moves to the
+*Incident history* page. A scheduled maintenance is the same with a future `start`. While
+an entry covers a monitor, its downtime is shown as maintenance.
 
-Some screenshots:
+## Setting it up (once)
 
-![Desktop, Light theme](docs/desktop.png)
+The deploy is [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml) (upstream's,
+less its KV migration, plus the custom domain). It runs on every push to `main`, once the
+repository has:
 
-## ⚡Quickstart / 📄Documentation
+- **`CLOUDFLARE_API_TOKEN`** (secret): an API token on the Cloudflare account that holds
+  `arugula.io`, made at *My Profile → API Tokens → Create Custom Token* with only:
+  - Account · **Workers Scripts** · Edit (the checking worker, its cron and Durable Object)
+  - Account · **D1** · Edit (the worker's history database)
+  - Account · **Cloudflare Pages** · Edit (the page, and its custom domain)
+  - Zone · **DNS** · Edit, for the zone `arugula.io` only (the `status` CNAME)
 
-Please refer to [Wiki](https://github.com/lyc8503/UptimeFlare/wiki)
+  Account Resources: that one account. No IP filtering is needed (GitHub's runners use
+  it). TTL: none, or a reminder to rotate it.
+- **`CLOUDFLARE_ACCOUNT_ID`** (variable): that account's id.
+- **`STATUS_DOMAIN`** (variable): `status.arugula.io`.
 
-## 🚀Upgrade existing deployments
+The first deploy makes the `uptimeflare_worker` worker, the `uptimeflare_d1` database and
+the `uptimeflare` Pages project in that account, then adds `status.arugula.io` to the
+project and a proxied CNAME to its `*.pages.dev` name. If the account has never used
+Workers, open *Workers & Pages* in the dashboard once first: that makes its
+`workers.dev` subdomain, which the deploy needs.
 
-Get the latest features right away with [simple upgrade process](https://github.com/lyc8503/UptimeFlare/wiki/Synchronize-updates-from-upstream)
+## Updating UptimeFlare
 
-## ⚙️Docs for developer
-
-To contribute new features or customize your deployment furthermore, see [here](https://github.com/lyc8503/UptimeFlare/wiki/How-to-develop).
-
-## New features (TODOs)
-
-- [x] Specify region for monitors
-- [x] TCP `opened` promise
-- [x] Use apprise to support various notification channels
-- [x] ~~Telegram example~~
-- [x] ~~[Bark](https://bark.day.app) example~~
-- [x] ~~Email notification via Cloudflare Email Workers~~
-- [x] Improve docs by providing simple examples
-- [x] Notification grace period
-- [ ] SSL certificate checks
-- [x] ~~Self-host Dockerfile~~
-- [x] Incident history
-- [x] Improve `checkLocationWorkerRoute` and fix possible `proxy failed`
-- [x] Groups
-- [x] Remove old incidents
-- [x] ~~Known issue~~: `fetch` doesn't support non-standard port (resolved after CF update)
-- [x] Compatibility date update
-- [x] Scheduled Maintenance
-- [x] Add docs for dev
-- [x] Migration to Terraform Cloudflare provider version 5.x
-- [x] Cloudflare D1 database
-- [x] Scheduled maintenances (via IIFE)
-- [x] Simpler config example
-- [x] Upcoming maintenances
-- [x] Universal Webhook upgrade
-- [x] i18n...? (maybe)
-- [ ] ICMP via proxy?
-- [x] Add default UA
-- [x] Customizable footer
-- [x] New header logo
-- [x] Improve CPU time usage
-- [x] Local deployment (docs WIP)
+This repository started from upstream at
+[`8035521`](https://github.com/lyc8503/UptimeFlare/commit/8035521268a54222959eaf720c82f530e755b6bb)
+(2026-10-21, after the CVE-2026-29779 fix). Upstream is one maintainer's project: read
+what changed before taking it, then merge it by hand, keeping `uptime.config.ts`,
+`.github/workflows/deploy.yml` and this README. The *Upstream Sync* workflow does the same
+when run by hand; it never runs on its own.
