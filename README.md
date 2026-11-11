@@ -68,6 +68,20 @@ project and a proxied CNAME to its `*.pages.dev` name. If the account has never 
 Workers, open *Workers & Pages* in the dashboard once first: that makes its
 `workers.dev` subdomain, which the deploy needs.
 
+## Reading a deploy run
+
+The deploy keeps no Terraform state, so each run first tries to `terraform import` the
+worker, its cron trigger and the Pages project, and goes on when an import fails. A
+failed import shows as a red `Terraform exited with code 1` annotation (with `This Worker
+does not exist on your account` or `Project not found`) followed by `WARNING: … import
+failed, continuing...`: expected on the first deploy, when none of them exist yet, and
+harmless after. What counts is the step's end, `Apply complete!`, and the run's result.
+The `Resource Destruction Considerations` warning about the cron trigger is Terraform's
+note that it can't delete one; nothing to do.
+
+A cron trigger takes up to 15 minutes to start after it's first made, so a new
+deployment's page can say "No data" for a while.
+
 ## Updating UptimeFlare
 
 This repository started from upstream at
